@@ -1,47 +1,91 @@
 """
-Transfer learning model using ResNet50 for CIFAR-10 classification.
+Transfer learning model using ResNet20 for CIFAR-10 classification.
 """
-
-from typing import Dict, Any
 
 import torch
 import torch.nn as nn
-import torchvision.models as models
-from torchvision.models import ResNet50_Weights
+import torch.nn.functional as F
 
 
-class TransferResNet50(nn.Module):
-    """
-    Transfer learning model using pretrained ResNet50 for CIFAR-10 classification.
+class BasicBlock(nn.Module):
+    """Basic residual block for ResNet20."""
 
-    This model uses a pretrained ResNet50 as a feature extractor and adds
-    a custom classification head on top.
-    """
+    expansion = 1
 
-    def __init__(self) -> None:
-        """Initialize the transfer learning model."""
-        super(TransferResNet50, self).__init__()
-
-        # Load pretrained ResNet50 model with updated API
-        self.resnet = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-
-        # Freeze all parameters in the base model
-        for param in self.resnet.parameters():
-            param.requires_grad = False
-
-        # Replace the final fully connected layer
-        # ResNet50 has 2048 features in the last layer before classification
-        in_features = self.resnet.fc.in_features
-
-        # New classification head for CIFAR-10 (10 classes)
-        self.resnet.fc = nn.Sequential(
-            nn.Linear(in_features, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 10),
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(
+            in_planes,
+            planes,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
         )
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(
+            planes, planes, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        self.bn2 = nn.BatchNorm2d(planes)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(
+                    in_planes,
+                    self.expansion * planes,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
+                nn.BatchNorm2d(self.expansion * planes),
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
+class ResNet20(nn.Module):
+    """
+    ResNet20 model specifically designed for CIFAR-10 classification.
+
+    This model is based on the ResNet architecture from the paper
+    "Deep Residual Learning for Image Recognition" (https://arxiv.org/abs/1512.03385)
+    but adapted for CIFAR-10 with the 20-layer configuration.
+    """
+
+    def __init__(self, num_classes=10):
+        super(ResNet20, self).__init__()
+        self.in_planes = 16
+
+        # Initial convolution layer
+        self.conv1 = nn.Conv2d(
+            3, 16, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(16)
+
+        # Create the residual blocks
+        # ResNet20 has 3 groups of layers, with 3 BasicBlock each (3×2×3 + 2 = 20 layers)
+        self.layer1 = self._make_layer(BasicBlock, 16, 3, stride=1)
+        self.layer2 = self._make_layer(BasicBlock, 32, 3, stride=2)
+        self.layer3 = self._make_layer(BasicBlock, 64, 3, stride=2)
+
+        # Final fully connected layer
+        self.fc = nn.Linear(64 * BasicBlock.expansion, num_classes)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
         """
         Forward pass through the network.
 
@@ -51,12 +95,22 @@ class TransferResNet50(nn.Module):
         Returns:
             Output logits tensor of shape (batch_size, 10)
         """
-        # CIFAR-10 images are 32x32, but ResNet expects at least 224x224
-        # We can either upsample or adjust the model
-        # Here we're using the model as-is, but may need to upsample the images
-        return self.resnet(x)
+        # Initial convolution
+        out = F.relu(self.bn1(self.conv1(x)))
 
-    def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
+        # Residual blocks
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+
+        # Global average pooling and final classification
+        out = F.avg_pool2d(out, out.size()[2:])
+        out = out.view(out.size(0), -1)
+        out = self.fc(out)
+
+        return out
+
+    def get_embedding(self, x):
         """
         Extract embeddings from the last hidden layer.
 
@@ -64,24 +118,30 @@ class TransferResNet50(nn.Module):
             x: Input tensor of shape (batch_size, 3, 32, 32)
 
         Returns:
-            Feature embeddings of shape (batch_size, 512)
+            Feature embeddings before the final classification layer
         """
-        # Get feature vector before the final classification layer
-        # Go through all layers except the final fully connected layer
-        x = self.resnet.conv1(x)
-        x = self.resnet.bn1(x)
-        x = self.resnet.relu(x)
-        x = self.resnet.maxpool(x)
+        # Initial convolution
+        out = F.relu(self.bn1(self.conv1(x)))
 
-        x = self.resnet.layer1(x)
-        x = self.resnet.layer2(x)
-        x = self.resnet.layer3(x)
-        x = self.resnet.layer4(x)
+        # Residual blocks
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
 
-        x = self.resnet.avgpool(x)
-        x = torch.flatten(x, 1)
-
-        # Get embeddings from the first layer of the new classification head
-        embeddings = self.resnet.fc[0](x)  # 512-dim embedding
+        # Global average pooling
+        out = F.avg_pool2d(out, out.size()[2:])
+        embeddings = out.view(out.size(0), -1)
 
         return embeddings
+
+
+# For backward compatibility with existing code that expects TransferResNet50
+class TransferResNet50(ResNet20):
+    """
+    Alias for ResNet20 to maintain backward compatibility with existing code.
+    This class has been renamed but keeps the original class name for compatibility.
+    """
+
+    def __init__(self):
+        """Initialize the ResNet20 model for CIFAR-10."""
+        super(TransferResNet50, self).__init__(num_classes=10)

@@ -14,7 +14,7 @@ from src.training.trainer import train_model
 from src.evaluation.evaluate import evaluate_model
 from src.evaluation.visualize import visualize_results
 from src.networks.classic_network import ClassicCNN
-from src.networks.transfer_network import TransferResNet50
+from src.networks.transfer_network import ResNet20
 from src.data_processing.utils import get_cifar10_dataloaders
 from src.training.hparam_tuning import tune_hyperparameters
 
@@ -192,8 +192,8 @@ def main() -> None:
         model_builder = lambda: ClassicCNN()
         model_name = "classic_cnn"
     else:  # transfer
-        model_builder = lambda: TransferResNet50()
-        model_name = "transfer_resnet50"
+        model_builder = lambda: ResNet20()
+        model_name = "resnet20_cifar"
 
     # Create initial model instance
     model = model_builder()

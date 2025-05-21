@@ -90,7 +90,12 @@ def objective(
     # Create optimizer with trial hyperparameters
     if model_type == "transfer" and "fc_lr_multiplier" in params:
         # Different learning rates for different parts of the model
-        fc_params = list(model.resnet.fc.parameters())
+        # Handle both nested structure (model.resnet.fc) and direct structure (model.fc)
+        if hasattr(model, "resnet"):  # Original TransferResNet50 structure
+            fc_params = list(model.resnet.fc.parameters())
+        else:  # New ResNet20 structure
+            fc_params = list(model.fc.parameters())
+
         base_params = list(
             filter(
                 lambda p: p.requires_grad,
